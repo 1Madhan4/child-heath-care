@@ -1,0 +1,27 @@
+# Root project .gitignore
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment files (contain secrets!)
+.env
+.env.local
+.env.*.local
+
+# Firebase cache
+.firebase/
+
+# Large binary files
+Antigravity.exe
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
