@@ -294,7 +294,7 @@ export default function AuthPage() {
                     <span>or</span>
                 </div>
 
-                <button className="btn btn-google" onClick={handleGoogleSignIn} disabled={loading} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', backgroundColor: 'white', color: '#555', border: '1px solid #ddd' }}>
+                <button className="btn btn-google" onClick={handleGoogleSignIn} disabled={loading} style={{ width: '100%' }}>
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" width="20" />
                     Continue with Google
                 </button>
