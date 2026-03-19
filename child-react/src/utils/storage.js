@@ -1,25 +1,10 @@
-/* Storage Module — LocalStorage Only */
+import { ref, set, get, push, remove, query, orderByChild, equalTo } from 'firebase/database';
+import { db } from './firebase';
 
 const SESSION_KEY = 'mindbloom_session';
-const DATA_KEY = 'mindbloom_data';
 
 export const Storage = {
-  getDB() {
-    try {
-      const data = localStorage.getItem(DATA_KEY);
-      if (data) return JSON.parse(data);
-    } catch {}
-    return { users: {}, checkins: {}, observations: {} };
-  },
-
-  saveDB(db) {
-    localStorage.setItem(DATA_KEY, JSON.stringify(db));
-  },
-
-  sanitizeEmail(email) {
-    return email.toLowerCase().replace(/[.#$[\]]/g, '_');
-  },
-
+  // --- Session Helpers (still using localStorage for local persistent session state) ---
   setSession(data) {
     const sessionWithExpiry = {
       ...data,
@@ -46,49 +31,63 @@ export const Storage = {
     localStorage.removeItem(SESSION_KEY);
   },
 
-  generateId() {
-    return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+  // --- Firebase Database Methods ---
+
+  async saveUserProfile(uid, userConfig) {
+    const userRef = ref(db, `users/${uid}`);
+    await set(userRef, {
+      ...userConfig,
+      updatedAt: new Date().toISOString()
+    });
   },
 
-  async saveUserProfile(userConfig) {
-    const db = this.getDB();
-    const key = this.sanitizeEmail(userConfig.username || userConfig.email);
-    db.users[key] = userConfig;
-    this.saveDB(db);
+  async getUserProfile(uid) {
+    const userRef = ref(db, `users/${uid}`);
+    const snapshot = await get(userRef);
+    return snapshot.exists() ? snapshot.val() : null;
   },
 
-  async getUserProfile(username) {
-    const db = this.getDB();
-    const key = this.sanitizeEmail(username);
-    return db.users[key] || null;
+  // Helper for lookup by email (used for legacy or external lookups)
+  async getUserProfileByEmail(email) {
+    const emailKey = email.toLowerCase().replace(/[.#$[\]]/g, '_');
+    const userQuery = query(ref(db, 'users'), orderByChild('email'), equalTo(email.toLowerCase()));
+    const snapshot = await get(userQuery);
+    if (snapshot.exists()) {
+      const val = snapshot.val();
+      return Object.values(val)[0];
+    }
+    return null;
   },
 
-  async deleteUserFromDB(email) {
-    const db = this.getDB();
-    const key = this.sanitizeEmail(email);
-    delete db.users[key];
-    this.saveDB(db);
+  async deleteUserFromDB(uid) {
+    await remove(ref(db, `users/${uid}`));
   },
 
   async getCounselors() {
-    const db = this.getDB();
-    return Object.values(db.users).filter(u => u.role === 'counselor');
+    const userQuery = query(ref(db, 'users'), orderByChild('role'), equalTo('counselor'));
+    const snapshot = await get(userQuery);
+    return snapshot.exists() ? Object.values(snapshot.val()) : [];
   },
 
   async saveCheckin(data) {
-    const db = this.getDB();
-    const id = this.generateId();
-    db.checkins[id] = data;
-    this.saveDB(db);
+    const checkinRef = push(ref(db, 'checkins'));
+    await set(checkinRef, {
+      ...data,
+      createdAt: new Date().toISOString()
+    });
   },
 
   async getCheckinsByChild(childName) {
     const session = this.getSession();
     if (!session) return [];
-    const db = this.getDB();
-    const allData = Object.entries(db.checkins)
-      .map(([id, val]) => ({ id, ...val }))
-      .filter(c => c.childName === childName);
+
+    const checkinQuery = query(ref(db, 'checkins'), orderByChild('childName'), equalTo(childName));
+    const snapshot = await get(checkinQuery);
+
+    if (!snapshot.exists()) return [];
+
+    const allData = Object.entries(snapshot.val()).map(([id, val]) => ({ id, ...val }));
+
     return allData
       .filter(c => {
         if (session.role === 'parent') return c.parentEmail === session.email;
@@ -100,19 +99,24 @@ export const Storage = {
   },
 
   async saveObservation(data) {
-    const db = this.getDB();
-    const id = this.generateId();
-    db.observations[id] = data;
-    this.saveDB(db);
+    const obsRef = push(ref(db, 'observations'));
+    await set(obsRef, {
+      ...data,
+      createdAt: new Date().toISOString()
+    });
   },
 
   async getObservationsByChild(childName) {
     const session = this.getSession();
     if (!session) return [];
-    const db = this.getDB();
-    const allData = Object.entries(db.observations)
-      .map(([id, val]) => ({ id, ...val }))
-      .filter(o => o.childName === childName);
+
+    const obsQuery = query(ref(db, 'observations'), orderByChild('childName'), equalTo(childName));
+    const snapshot = await get(obsQuery);
+
+    if (!snapshot.exists()) return [];
+
+    const allData = Object.entries(snapshot.val()).map(([id, val]) => ({ id, ...val }));
+
     return allData
       .filter(o => {
         if (session.role === 'parent') return o.parentEmail === session.email;
@@ -126,42 +130,50 @@ export const Storage = {
   async getChildrenForUser() {
     const session = this.getSession();
     if (!session) return [];
-    const db = this.getDB();
+
+    // This is less efficient in NoSQL without normalized "user_children" mapping
+    // But for now, we'll keep the logic of scanning checkins/observations
     const children = new Set();
-    const filterAdd = data => {
-      for (const key in data) {
-        const item = data[key];
-        if (session.role === 'parent' && item.parentEmail === session.email) children.add(item.childName);
-        if (session.role === 'teacher' && item.teacherEmail === session.email) children.add(item.childName);
-        if (session.role === 'counselor' && item.counselorEmail === session.email) children.add(item.childName);
+
+    const scanData = async (path) => {
+      const snapshot = await get(ref(db, path));
+      if (snapshot.exists()) {
+        Object.values(snapshot.val()).forEach(item => {
+          if (session.role === 'parent' && item.parentEmail === session.email) children.add(item.childName);
+          if (session.role === 'teacher' && item.teacherEmail === session.email) children.add(item.childName);
+          if (session.role === 'counselor' && item.counselorEmail === session.email) children.add(item.childName);
+        });
       }
     };
-    if (db.checkins) filterAdd(db.checkins);
-    if (db.observations) filterAdd(db.observations);
+
+    await scanData('checkins');
+    await scanData('observations');
+
     return Array.from(children).sort();
   },
 
   async deleteCheckinsForUser(email) {
-    const db = this.getDB();
-    let changed = false;
-    for (const [id, data] of Object.entries(db.checkins)) {
-      if (data.parentEmail === email || data.teacherEmail === email || data.counselorEmail === email) {
-        delete db.checkins[id];
-        changed = true;
+    // In Realtime DB, deleting filtered items requires fetching them first or secondary indexing
+    const snapshot = await get(ref(db, 'checkins'));
+    if (snapshot.exists()) {
+      const entries = Object.entries(snapshot.val());
+      for (const [id, data] of entries) {
+        if (data.parentEmail === email || data.teacherEmail === email || data.counselorEmail === email) {
+          await remove(ref(db, `checkins/${id}`));
+        }
       }
     }
-    if (changed) this.saveDB(db);
   },
 
   async deleteObservationsForUser(email) {
-    const db = this.getDB();
-    let changed = false;
-    for (const [id, data] of Object.entries(db.observations)) {
-      if (data.parentEmail === email || data.teacherEmail === email || data.counselorEmail === email) {
-        delete db.observations[id];
-        changed = true;
+    const snapshot = await get(ref(db, 'observations'));
+    if (snapshot.exists()) {
+      const entries = Object.entries(snapshot.val());
+      for (const [id, data] of entries) {
+        if (data.parentEmail === email || data.teacherEmail === email || data.counselorEmail === email) {
+          await remove(ref(db, `observations/${id}`));
+        }
       }
     }
-    if (changed) this.saveDB(db);
   },
 };
